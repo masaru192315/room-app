@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>開発ノート</title>
+  <meta name="description" content="作っているアプリの経緯・目的・感想を記録して、気付きを得るためのノート">
+  <meta name="theme-color" content="#f7f6f3" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1b1b1f" media="(prefers-color-scheme: dark)">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="開発ノート">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="back" href="#/home" aria-label="ホーム">📓</a>
+    <h1 id="title">開発ノート</h1>
+    <a class="icon-btn" href="#/settings" aria-label="設定">⚙️</a>
+  </header>
+
+  <main id="view" class="view" aria-live="polite"></main>
+
+  <nav class="nav" aria-label="メイン">
+    <a href="#/home" data-nav="home"><span>🏠</span><small>ホーム</small></a>
+    <a href="#/notes" data-nav="notes"><span>📚</span><small>ノート</small></a>
+    <button id="fab" class="fab" aria-label="新しいノート">＋</button>
+    <a href="#/projects" data-nav="projects"><span>🚀</span><small>プロジェクト</small></a>
+    <a href="#/insights" data-nav="insights"><span>💡</span><small>気付き</small></a>
+  </nav>
+
+  <div id="sheet" class="sheet" hidden></div>
+  <div id="toast" class="toast" role="status"></div>
+
+  <noscript>このアプリを使うには JavaScript を有効にしてください。</noscript>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
