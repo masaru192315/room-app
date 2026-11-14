@@ -25,6 +25,16 @@ python3 -m http.server 8000
 # → http://localhost:8000 を開く
 ```
 
+### claude.ai で使う（データが Claude アカウントに残る）
+
+```bash
+node tools/build-artifact.mjs   # → dist/devnote-artifact.html（1ファイルにまとめた版）
+```
+
+このファイルを claude.ai のアーティファクトとして公開すると、ノートは **Claude アカウントの本人専用の保存領域** に保存されます。
+どの端末から開いても同じデータが見られ、ブラウザの都合で消えることもありません。
+（アプリが自動で判定し、claude.ai 上では Claude に、それ以外ではブラウザに保存します）
+
 ### スマホで使う（GitHub Pages・無料）
 
 1. GitHub のリポジトリで **Settings → Pages** を開く
@@ -33,9 +43,9 @@ python3 -m http.server 8000
 
 ## ⚠️ データについて
 
-- データはブラウザの中（IndexedDB）に保存されます。サーバーには送られません。
-- **特にiPhoneでは、ブラウザがデータを消すことがあります。** 設定画面の「バックアップ (JSON)」で定期的に書き出してください。
-- 端末をまたいだ同期は、まだできません（今後の予定）。
+- claude.ai 版：Claude アカウントの本人専用領域に保存（他の人からは見えません）。
+- GitHub Pages / ローカル版：ブラウザの中（IndexedDB）に保存され、サーバーには送られません。**特にiPhoneでは、ブラウザがデータを消すことがあります。** 設定画面の「バックアップ (JSON)」で定期的に書き出してください。
+- 2つの版の間でデータを移すには、JSON のバックアップと復元を使います。
 
 ## 構成
 
@@ -43,10 +53,11 @@ python3 -m http.server 8000
 index.html          画面の骨組み
 style.css           デザイン（ライト/ダーク）
 js/app.js           画面とルーティング
-js/db.js            IndexedDB の保存処理
+js/db.js            保存処理（Claude / IndexedDB を自動で切り替え）
 js/templates.js     テンプレート・気分・問いかけ
 js/markdown.js      Markdown 表示・[[リンク]] 抽出
 js/insights.js      気付きの集計
 sw.js               オフライン対応（Service Worker）
 manifest.webmanifest PWA 設定
+tools/build-artifact.mjs  claude.ai 用の1ファイル版を作る
 ```

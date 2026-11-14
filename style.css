@@ -263,3 +263,10 @@ body.focus { padding-bottom: 0; }
 @media (min-width: 720px) {
   .view { padding: 24px 16px; }
 }
+
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.loading { padding: 40px 0; }
+
+/* claude.ai のアーティファクトとして表示するとき */
+body.embedded .topbar { top: env(safe-area-inset-top, 0px); padding-top: 10px; }
+body.embedded::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 11; background: var(--bg); }

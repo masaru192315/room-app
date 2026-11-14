@@ -1,10 +1,10 @@
-import { db, requestPersist } from './db.js';
+import { db, requestPersist, initStore, embedded } from './db.js';
 import { TYPES, MOODS, PROMPTS } from './templates.js';
 import { render, esc, wikiLinks, inlineTags } from './markdown.js';
 import * as ins from './insights.js';
 
 // ---------- 状態 ----------
-const state = { notes: [], projects: [] };
+const state = { notes: [], projects: [], storage: 'local' };
 const SETTINGS_KEY = 'devnote.settings';
 const settings = Object.assign({ theme: 'auto', weekGoal: 3, lastProject: '' }, safeJSON(localStorage.getItem(SETTINGS_KEY)));
 function safeJSON(s) { try { return JSON.parse(s) || {}; } catch { return {}; } }
@@ -30,18 +30,62 @@ export function noteTitle(n) {
 const allTags = n => [...new Set([...(n.tags || []), ...inlineTags(n.body)])];
 const snippet = (n, len = 80) => (n.body || '').replace(/^#+\s.*$/gm, '').replace(/[-*]\s\[[ xX]\]|^\s*[-*]\s|^\s*\d+\.\s/gm, '').replace(/\*\*|~~|`|\[\[|\]\]/g, '').replace(/\s+/g, ' ').trim().slice(0, len);
 
+// ---------- 画面遷移 ----------
+// 通常は URL の #/... で画面を切り替える。claude.ai のアーティファクト内では URL を使えないので内部状態で切り替える。
+let currentPath = embedded ? '/home' : (location.hash.slice(1) || '/home');
+function go(path) {
+  path = path.replace(/^#/, '');
+  if (embedded) { currentPath = path; route(); }
+  else if (location.hash === '#' + path) route();
+  else location.hash = path;
+}
+
+// ---------- 確認ダイアログ（ブラウザ標準の confirm/prompt の代わり） ----------
+function ask(message, { ok = 'OK', danger = false, typeToConfirm = '' } = {}) {
+  return new Promise(resolve => {
+    let done = false;
+    sheet(`<h3>${esc(message)}</h3>
+      ${typeToConfirm ? `<label class="field"><span>確認のため「${esc(typeToConfirm)}」と入力してください</span><input id="ask-input" autocomplete="off"></label>` : ''}
+      <div class="row"><button class="btn ghost" data-close>キャンセル</button><button class="btn ${danger ? 'danger' : 'primary'}" id="ask-ok" ${typeToConfirm ? 'disabled' : ''}>${esc(ok)}</button></div>`, (root, closeFn) => {
+      const input = $('#ask-input', root);
+      if (input) { input.focus(); input.oninput = () => { $('#ask-ok', root).disabled = input.value.trim() !== typeToConfirm; }; }
+      $('#ask-ok', root).onclick = () => { done = true; closeFn(); resolve(true); };
+    }, () => { if (!done) resolve(false); });
+  });
+}
+
+// ---------- ファイル保存 ----------
+async function saveFile(name, text, type) {
+  if (embedded) {
+    const dl = await window.claude.use('downloads');
+    if (!dl) { toast('この画面ではファイルを保存できません'); return false; }
+    try { await dl.save({ filename: name, data: text }); toast('保存しました'); return true; }
+    catch (e) { if (e?.code !== 'declined') toast('保存できませんでした'); return false; }
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  return true;
+}
+
 // ---------- 保存 ----------
 async function saveNote(n) {
   n.updatedAt = Date.now();
-  await db.put('notes', n);
+  try { await db.put('notes', n); } catch (e) { console.error(e); toast(saveErrorText(e)); throw e; }
   const i = state.notes.findIndex(x => x.id === n.id);
   if (i >= 0) state.notes[i] = n; else state.notes.push(n);
 }
 async function saveProject(p) {
   p.updatedAt = Date.now();
-  await db.put('projects', p);
+  try { await db.put('projects', p); } catch (e) { console.error(e); toast(saveErrorText(e)); throw e; }
   const i = state.projects.findIndex(x => x.id === p.id);
   if (i >= 0) state.projects[i] = p; else state.projects.push(p);
+}
+function saveErrorText(e) {
+  if (e?.code === 'quota_exceeded') return '保存できる量の上限に達しました。ゴミ箱を空にしてください';
+  if (e?.code === 'invalid_argument') return 'この表示では保存できません（閲覧のみの権限です）';
+  return '保存できませんでした。通信状態を確認してください';
 }
 function newNote(type = 'memo', extra = {}) {
   const now = Date.now();
@@ -54,11 +98,14 @@ function toast(msg) {
   el.textContent = msg; el.classList.add('show');
   clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('show'), 2200);
 }
-function sheet(html, mount) {
+let closeSheet = null;
+function sheet(html, mount, onClose) {
+  closeSheet?.();
   const root = $('#sheet');
   root.innerHTML = `<div class="sheet-backdrop" data-close></div><div class="sheet-panel" role="dialog" aria-modal="true">${html}</div>`;
   root.hidden = false;
-  const close = () => { root.hidden = true; root.innerHTML = ''; };
+  const close = () => { if (closeSheet !== close) return; closeSheet = null; root.hidden = true; root.innerHTML = ''; onClose?.(); };
+  closeSheet = close;
   root.onclick = e => { if (e.target.closest('[data-close]')) close(); };
   mount?.(root, close);
   return close;
@@ -91,7 +138,7 @@ function openNewNoteSheet(extra = {}) {
       const n = newNote(b.dataset.type, extra);
       await saveNote(n);
       close();
-      location.hash = `#/note/${n.id}?new=1`;
+      go(`#/note/${n.id}?new=1`);
     });
   });
 }
@@ -193,7 +240,7 @@ function renderHome() {
     const q = PROMPTS[+$('#prompt-text').dataset.idx];
     const n = newNote('memo', { title: q, body: '' });
     await saveNote(n);
-    location.hash = `#/note/${n.id}?new=1`;
+    go(`#/note/${n.id}?new=1`);
   };
   $('#first-project')?.addEventListener('click', () => openProjectSheet());
 }
@@ -246,11 +293,11 @@ function findByTitle(title) {
 }
 async function openWikiLink(title) {
   const hit = findByTitle(title);
-  if (hit) { location.hash = `#/note/${hit.id}`; return; }
+  if (hit) { go(`#/note/${hit.id}`); return; }
   const n = newNote('memo', { title });
   await saveNote(n);
   toast(`「${title}」を新しく作りました`);
-  location.hash = `#/note/${n.id}`;
+  go(`#/note/${n.id}`);
 }
 
 function renderEditor(id, params) {
@@ -351,12 +398,12 @@ function renderEditor(id, params) {
     }
   };
   $('#del')?.addEventListener('click', async () => {
-    n.deletedAt = Date.now(); await persist(); toast('ゴミ箱に移しました（設定から戻せます）'); location.hash = '#/notes';
+    n.deletedAt = Date.now(); await persist(); toast('ゴミ箱に移しました（設定から戻せます）'); go('#/notes');
   });
   $('#restore')?.addEventListener('click', async () => { n.deletedAt = null; await persist(); renderEditor(id, params); toast('元に戻しました'); });
   $('#purge')?.addEventListener('click', async () => {
-    if (!confirm('完全に削除します。元に戻せません。よろしいですか？')) return;
-    await db.del('notes', n.id); state.notes = state.notes.filter(x => x.id !== n.id); location.hash = '#/settings';
+    if (!await ask('このノートを完全に削除しますか？元に戻せません。', { ok: '完全に削除', danger: true })) return;
+    await db.del('notes', n.id); state.notes = state.notes.filter(x => x.id !== n.id); go('#/settings');
   });
 
   // バックリンク
@@ -399,8 +446,7 @@ function openProjectSheet(p = null) {
       await saveProject(proj);
       if (!p) { settings.lastProject = proj.id; saveSettings(); }
       close();
-      location.hash = `#/project/${proj.id}`;
-      route();
+      go(`#/project/${proj.id}`);
     };
   });
 }
@@ -427,7 +473,7 @@ function renderProjects() {
 
 function renderProject(id) {
   const p = projectOf(id);
-  if (!p) { location.hash = '#/projects'; return; }
+  if (!p) { go('#/projects'); return; }
   setTitle(p.name); setNav('projects');
   const ns = live().filter(n => n.projectId === id).sort((a, b) => a.createdAt - b.createdAt);
   const first = ns[0]?.createdAt || p.createdAt;
@@ -538,8 +584,8 @@ function renderInsights() {
       : '<p class="muted">開発ログの「- [ ] 」がここに集まります。</p>'}
   </section>`;
 
-  $('#write-weekly').onclick = async () => { const n = newNote('weekly'); await saveNote(n); location.hash = `#/note/${n.id}?new=1`; };
-  $$('.word', view).forEach(b => b.onclick = () => { Object.assign(listState, { q: b.dataset.w, type: '', project: '', tag: '' }); location.hash = '#/notes'; });
+  $('#write-weekly').onclick = async () => { const n = newNote('weekly'); await saveNote(n); go(`#/note/${n.id}?new=1`); };
+  $$('.word', view).forEach(b => b.onclick = () => { Object.assign(listState, { q: b.dataset.w, type: '', project: '', tag: '' }); go('#/notes'); });
   $$('.task-list input', view).forEach(cb => cb.onchange = async () => {
     const t = tasks[+cb.dataset.i];
     const lines = t.note.body.split('\n');
@@ -552,12 +598,6 @@ function renderInsights() {
 }
 
 // ---------- 設定 ----------
-function download(name, text, type) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([text], { type }));
-  a.download = name; a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-}
 function toMarkdown() {
   const out = [`# 開発ノート エクスポート (${fmtDate(Date.now())})\n`];
   for (const p of state.projects) out.push(`\n# 🚀 ${p.name}\n\n> ${(p.purpose || '').replace(/\n/g, '\n> ')}\n`);
@@ -572,8 +612,12 @@ function toMarkdown() {
 async function renderSettings() {
   setTitle('設定'); setNav('');
   const trash = state.notes.filter(n => n.deletedAt).sort((a, b) => b.deletedAt - a.deletedAt);
-  let persisted = false; try { persisted = await navigator.storage?.persisted?.(); } catch {}
-  let usage = ''; try { const e = await navigator.storage?.estimate?.(); if (e) usage = `${(e.usage / 1024).toFixed(0)} KB 使用中`; } catch {}
+  const onClaude = state.storage === 'claude';
+  let persisted = onClaude; if (!onClaude) try { persisted = await navigator.storage?.persisted?.(); } catch {}
+  let usage = ''; if (!onClaude) try { const e = await navigator.storage?.estimate?.(); if (e) usage = `${(e.usage / 1024).toFixed(0)} KB 使用中`; } catch {}
+  const storageText = onClaude
+    ? 'データはあなたの Claude アカウントに保存されています（本人だけが読めます）。どの端末から開いても同じノートが見られます。念のため、ときどきバックアップも書き出しておくと安心です。'
+    : `データはこの端末のブラウザ内だけに保存されています（${usage}${persisted ? '・保護済み' : ''}）。<b>ときどきバックアップを書き出してください。</b>特にiPhoneでは、ブラウザがデータを消すことがあります。`;
 
   view.innerHTML = `
   <section class="card">
@@ -587,7 +631,7 @@ async function renderSettings() {
   </section>
   <section class="card">
     <h3>💾 データ</h3>
-    <p class="muted small">データはこの端末のブラウザ内だけに保存されています（${usage}${persisted ? '・保護済み' : ''}）。<b>ときどきバックアップを書き出してください。</b>特にiPhoneでは、ブラウザがデータを消すことがあります。</p>
+    <p class="muted small">${storageText}</p>
     <div class="row wrap">
       <button class="btn primary" id="exp-json">バックアップ (JSON)</button>
       <button class="btn" id="exp-md">Markdownで書き出し</button>
@@ -601,7 +645,7 @@ async function renderSettings() {
   </section>
   <section class="card">
     <h3>ℹ️ このアプリについて</h3>
-    <p class="small">作っているアプリの「経緯・目的・感想」を記録して、振り返りから気付きを得るためのノートです。無料・広告なし・データは自分の端末だけ。</p>
+    <p class="small">作っているアプリの「経緯・目的・感想」を記録して、振り返りから気付きを得るためのノートです。無料・広告なし・データは自分だけのもの。</p>
     <p class="small muted">ヒント: 本文に <code>[[ノート名]]</code> と書くとノート同士をリンクでき、リンク先にはバックリンクが表示されます。<code>#タグ</code> も使えます。</p>
     <button class="link-btn danger" id="wipe">すべてのデータを削除</button>
   </section>`;
@@ -609,8 +653,8 @@ async function renderSettings() {
   $$('#theme button').forEach(b => b.onclick = () => { settings.theme = b.dataset.v; saveSettings(); applyTheme(); renderSettings(); });
   $$('#goal button').forEach(b => b.onclick = () => { settings.weekGoal = +b.dataset.v; saveSettings(); renderSettings(); });
   const stamp = new Date().toISOString().slice(0, 10);
-  $('#exp-json').onclick = () => { download(`devnote-backup-${stamp}.json`, JSON.stringify({ app: 'devnote', version: 1, exportedAt: Date.now(), projects: state.projects, notes: state.notes }, null, 2), 'application/json'); settings.lastBackup = Date.now(); saveSettings(); };
-  $('#exp-md').onclick = () => download(`devnote-${stamp}.md`, toMarkdown(), 'text/markdown');
+  $('#exp-json').onclick = async () => { if (await saveFile(`devnote-backup-${stamp}.json`, JSON.stringify({ app: 'devnote', version: 1, exportedAt: Date.now(), projects: state.projects, notes: state.notes }, null, 2), 'application/json')) { settings.lastBackup = Date.now(); saveSettings(); } };
+  $('#exp-md').onclick = () => saveFile(`devnote-${stamp}.md`, toMarkdown(), 'text/markdown');
   $('#imp').onchange = async e => {
     const f = e.target.files[0]; if (!f) return;
     try {
@@ -624,32 +668,35 @@ async function renderSettings() {
       state.projects = ps; state.notes = ns;
       toast(`復元しました（ノート${nc}件・プロジェクト${pc}件を更新）`);
       renderSettings();
-    } catch (err) { alert('読み込めませんでした: ' + err.message); }
+    } catch (err) { toast('読み込めませんでした: ' + err.message); }
   };
   $('#persist')?.addEventListener('click', async () => { const ok = await requestPersist(); toast(ok ? '保護されました' : 'このブラウザでは保護できませんでした。バックアップを使ってください'); renderSettings(); });
   $('#empty-trash')?.addEventListener('click', async () => {
-    if (!confirm(`ゴミ箱の${trash.length}件を完全に削除します。よろしいですか？`)) return;
+    if (!await ask(`ゴミ箱の${trash.length}件を完全に削除しますか？`, { ok: '完全に削除', danger: true })) return;
     for (const n of trash) await db.del('notes', n.id);
     state.notes = state.notes.filter(n => !n.deletedAt); renderSettings();
   });
   $('#wipe').onclick = async () => {
-    if (!confirm('すべてのノートとプロジェクトを削除します。先にバックアップを取りましたか？')) return;
-    if (prompt('確認のため「削除」と入力してください') !== '削除') return;
-    await db.clear('notes'); await db.clear('projects'); state.notes = []; state.projects = []; toast('削除しました'); location.hash = '#/home';
+    if (!await ask('すべてのノートとプロジェクトを削除します。先にバックアップを取りましたか？', { ok: 'すべて削除', danger: true, typeToConfirm: '削除' })) return;
+    await db.clear('notes'); await db.clear('projects'); state.notes = []; state.projects = []; toast('削除しました'); go('#/home');
   };
 }
 
 // ---------- テーマ ----------
+const hostTheme = document.documentElement.getAttribute('data-theme'); // claude.ai が指定したテーマ
 function applyTheme() {
   const t = settings.theme;
-  if (t === 'auto') document.documentElement.removeAttribute('data-theme');
-  else document.documentElement.dataset.theme = t;
+  if (t !== 'auto') document.documentElement.dataset.theme = t;
+  else if (hostTheme) document.documentElement.dataset.theme = hostTheme;
+  else document.documentElement.removeAttribute('data-theme');
 }
 
 // ---------- ルーティング ----------
 async function route() {
   if (leaveEditor) { const f = leaveEditor; leaveEditor = null; await f(); }
-  const [path, qs] = (location.hash.slice(1) || '/home').split('?');
+  if (!embedded) currentPath = location.hash.slice(1) || '/home';
+  closeSheet?.();
+  const [path, qs] = currentPath.split('?');
   const params = new URLSearchParams(qs || '');
   const [, name, id] = path.split('/');
   document.body.dataset.view = name || 'home';
@@ -667,17 +714,33 @@ async function route() {
 
 async function init() {
   applyTheme();
-  [state.notes, state.projects] = await Promise.all([db.all('notes'), db.all('projects')]);
+  document.body.classList.toggle('embedded', embedded);
+  view.innerHTML = '<p class="muted center loading">読み込み中…</p>';
+  state.storage = await initStore();
+  try {
+    [state.notes, state.projects] = await Promise.all([db.all('notes'), db.all('projects')]);
+  } catch (e) {
+    console.error(e);
+    view.innerHTML = '<div class="card"><h3>データを読み込めませんでした</h3><p class="muted">通信状態を確認して、ページを開き直してください。</p></div>';
+    return;
+  }
   state.projects.sort((a, b) => a.createdAt - b.createdAt);
-  window.addEventListener('hashchange', route);
-  $('#fab').onclick = () => openNewNoteSheet(location.hash.startsWith('#/project/') ? { projectId: location.hash.split('/')[2] } : {});
+  if (state.storage === 'local-fallback') setTimeout(() => toast('この表示では Claude に保存できないため、この端末に保存します'), 600);
+  if (!embedded) window.addEventListener('hashchange', route);
+  // #/... へのリンクは go() で処理（アーティファクト内でも動くように）
+  document.addEventListener('click', e => {
+    const a = e.target.closest('a[href^="#/"]');
+    if (!a || e.defaultPrevented || e.metaKey || e.ctrlKey) return;
+    e.preventDefault(); go(a.getAttribute('href'));
+  });
+  $('#fab').onclick = () => openNewNoteSheet(currentPath.startsWith('/project/') ? { projectId: currentPath.split('/')[2] } : {});
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { if (!$('#sheet').hidden) { $('#sheet').hidden = true; $('#sheet').innerHTML = ''; } else document.body.classList.remove('focus'); }
+    if (e.key === 'Escape') { if (closeSheet) closeSheet(); else document.body.classList.remove('focus'); }
   });
   window.addEventListener('pagehide', () => flushEditor?.());
   document.addEventListener('visibilitychange', () => { if (document.hidden) flushEditor?.(); }); // アプリを閉じる前に入力途中の内容を保存
   route();
   if (state.notes.length > 5) requestPersist();
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('./sw.js').catch(() => {});
+  if (!embedded && 'serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('./sw.js').catch(() => {});
 }
 init();
